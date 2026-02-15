@@ -3,7 +3,7 @@ import yfinance as yf
 from ta.momentum import RSIIndicator
 
 # Drive上のCSV
-CSV_PATH = "/content/drive/MyDrive/nikkei225.csv"
+CSV_PATH = "nikkei225.csv"
 
 df = pd.read_csv(CSV_PATH)
 
