@@ -1,0 +1,30 @@
+name: Stock Scan
+
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 日本時間8時
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install packages
+        run: |
+          pip install yfinance ta pandas
+
+      - name: Run script
+        env:
+          MAIL_ADDRESS: ${{ secrets.MAIL_ADDRESS }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+        run: |
+          python main.py
