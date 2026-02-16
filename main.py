@@ -21,8 +21,8 @@ print("銘柄数:", len(codes))
 budget = 2000
 results = []
 
-for code in codes:
 
+for code in codes:
     try:
         print(f"分析中: {code}")
 
@@ -52,8 +52,12 @@ for code in codes:
                 "rsi": round(last_rsi, 1)
             })
 
-    except Exception as e:
-        print("エラー:", code, e)
+  except Exception as e:
+        print("=== エラー発生 ===")
+        print(code)
+        print(type(e))
+        print(e)
+        continue
 
 
 # =============================
