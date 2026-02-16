@@ -1,124 +1,195 @@
-import yfinance as yf
-import pandas as pd
-import smtplib
 import os
+import pandas as pd
+import yfinance as yf
+from ta.momentum import RSIIndicator
+import smtplib
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import datetime
 
 
-GMAIL = os.getenv("MAIL_ADDRESS")
-PASS = os.getenv("MAIL_PASSWORD")
-TO = os.getenv("MAIL_TO", GMAIL)
+# =============================
+# メール設定（GitHub Secretsから取得）
+# =============================
+
+MAIL_ADDRESS = os.getenv("MAIL_ADDRESS")
+MAIL_PASSWORD = os.getenv("MAIL_PASSWORD")
+MAIL_TO = os.getenv("MAIL_TO", MAIL_ADDRESS)
 
 
-CODES = [
-    "4502.T", "7203.T", "9432.T", "9984.T", "8306.T",
-    "6758.T", "5401.T", "2502.T", "9501.T"
-]
+# =============================
+# CSV読み込み
+# =============================
+
+CSV_PATH = "nikkei225.csv"
+
+df = pd.read_csv(CSV_PATH)
+
+codes = df.iloc[:, 0].astype(str)
+codes = codes[codes.str.isdigit()]
+codes = (codes + ".T").tolist()
+
+print("銘柄数:", len(codes))
 
 
-def calc_rsi(close, period=14):
+# =============================
+# スキャン設定
+# =============================
 
-    delta = close.diff()
-
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-
-    rs = avg_gain / avg_loss
-
-    rsi = 100 - (100 / (1 + rs))
-
-    return rsi.astype(float)
+BUDGET = 2000   # 2000円以下
+results = []
 
 
-def analyze():
+# =============================
+# メイン処理
+# =============================
 
-    results = []
+def scan():
 
-    print("銘柄数:", len(CODES))
-
-    for code in CODES:
+    for code in codes:
 
         try:
-            print("分析中:", code)
+            print(f"分析中: {code}")
 
-            df = yf.download(code, period="3mo", progress=False)
+            data = yf.download(
+                code,
+                period="6mo",
+                progress=False
+            )
 
-            if df.empty:
+            if data.empty:
                 continue
 
-            close = df["Close"]
+            close = data["Close"].squeeze()
 
-            rsi = calc_rsi(close)
+            ma25 = close.rolling(25).mean()
+            rsi = RSIIndicator(close).rsi()
 
-            price = float(close.iloc[-1])
-            rsi_val = float(rsi.iloc[-1])
+            price = close.iloc[-1].item()
+            rsi_val = rsi.iloc[-1].item()
+            ma25_val = ma25.iloc[-1].item()
 
-            price = round(price, 1)
-            rsi_val = round(rsi_val, 1)
+            # 買い条件
+            if (
+                price <= BUDGET and
+                price > ma25_val and
+                40 <= rsi_val <= 55
+            ):
 
-            if rsi_val < 30:
-                level = "★★★★★"
-            elif rsi_val < 40:
-                level = "★★★★☆"
-            elif rsi_val < 60:
-                level = "★★★☆☆"
-            elif rsi_val < 70:
-                level = "★★☆☆☆"
-            else:
-                level = "★☆☆☆☆"
+                score = calc_score(price, rsi_val, ma25_val)
 
-            results.append([
-                code,
-                price,
-                rsi_val,
-                level
-            ])
+                results.append({
+                    "code": code,
+                    "price": round(price, 1),
+                    "rsi": round(rsi_val, 1),
+                    "score": score
+                })
 
         except Exception as e:
-            print("Error:", code, e)
 
-    return pd.DataFrame(
-        results,
-        columns=["code", "price", "rsi", "expect"]
-    )
+            print(f"Error: {code} → {e}")
+            continue
 
-def send_mail(msg):
 
-    if not GMAIL or not PASS:
-        raise ValueError("GMAIL_USER / GMAIL_PASS が未設定です")
+# =============================
+# 期待度計算
+# =============================
 
-    body = MIMEText(msg, "plain", "utf-8")
-    body["Subject"] = "株スキャン結果"
-    body["From"] = GMAIL
-    body["To"] = TO
+def calc_score(price, rsi, ma25):
+
+    score = 0
+
+    if rsi < 45:
+        score += 2
+    elif rsi < 50:
+        score += 1
+
+    if price > ma25:
+        score += 2
+
+    if price < 1000:
+        score += 1
+
+    if score >= 4:
+        return "★★★ 高"
+    elif score >= 2:
+        return "★★☆ 中"
+    else:
+        return "★☆☆ 低"
+
+
+# =============================
+# CSV保存
+# =============================
+
+def save_csv():
+
+    df = pd.DataFrame(results)
+
+    path = "result_today.csv"
+
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+
+    print("保存:", path)
+
+
+# =============================
+# メール送信
+# =============================
+
+def send_mail(body):
+
+    if not MAIL_ADDRESS or not MAIL_PASSWORD:
+        raise ValueError("メール認証情報が設定されていません")
+
+    msg = MIMEText(body, "plain", "utf-8")
+
+    msg["Subject"] = "株スキャン結果（自動）"
+    msg["From"] = MAIL_ADDRESS
+    msg["To"] = MAIL_TO
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(GMAIL, PASS)
-        server.send_message(body)
+
+        server.login(MAIL_ADDRESS, MAIL_PASSWORD)
+        server.send_message(msg)
 
 
-
+# =============================
+# 本体
+# =============================
 
 def main():
 
-    df = analyze()
+    scan()
 
-    if df.empty:
-        body = "該当銘柄なし"
+    save_csv()
+
+    # ===== メール本文作成 =====
+
+    if not results:
+
+        body = "今日の買い候補はありません。"
+
     else:
-        body = df.to_string(index=False)
 
-    df.to_csv("result_today.csv", index=False, encoding="utf-8-sig")
+        body = "【今日の買い候補】\n\n"
 
-    print("保存: result_today.csv")
+        for r in results:
+
+            body += (
+                f"{r['code']}  "
+                f"¥{r['price']}  "
+                f"RSI:{r['rsi']}  "
+                f"期待度:{r['score']}\n"
+            )
 
     send_mail(body)
 
+    print("メール送信完了")
+
+
+# =============================
+# 実行
+# =============================
 
 if __name__ == "__main__":
+
     main()
