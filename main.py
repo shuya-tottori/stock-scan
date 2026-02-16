@@ -23,12 +23,18 @@ results = []
 
 
 for code in codes:
+
     try:
         print(f"分析中: {code}")
 
-        data = yf.download(code, period="6mo", progress=False)
+        data = yf.download(
+            code,
+            period="6mo",
+            progress=False
+        )
 
         if data.empty:
+            print("  → データなし")
             continue
 
         close = data["Close"].squeeze()
@@ -45,18 +51,17 @@ for code in codes:
             price > last_ma25 and
             40 <= last_rsi <= 55
         ):
-
             results.append({
                 "code": code,
                 "price": round(price, 1),
                 "rsi": round(last_rsi, 1)
             })
 
-  except Exception as e:
+    except Exception as e:
         print("=== エラー発生 ===")
-        print(code)
-        print(type(e))
-        print(e)
+        print("銘柄:", code)
+        print("種類:", type(e))
+        print("内容:", e)
         continue
 
 
