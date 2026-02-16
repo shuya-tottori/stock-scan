@@ -8,8 +8,8 @@ from datetime import datetime
 
 
 # ===== 環境変数（Secretsから取得）=====
-GMAIL = os.getenv("GMAIL_USER")
-PASS = os.getenv("GMAIL_PASS")
+GMAIL = os.getenv("MAIL_ADDRESS")
+PASS = os.getenv("MAIL_PASSWORD")
 TO = os.getenv("MAIL_TO", GMAIL)
 
 
