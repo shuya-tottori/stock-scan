@@ -123,13 +123,14 @@ def judge_level(rsi, ma5, ma25, ai_prob):
 
 def send_mail(body):
 
+    from datetime import datetime
+
+    today = datetime.now().strftime("%-m/%-d")
+
     msg = MIMEMultipart()
     msg["From"] = MAIL_ADDRESS
     msg["To"] = MAIL_TO
-    from datetime import datetime
-
-today = datetime.now().strftime("%-m/%-d")  # 例: 2/16（Linux用）
-msg["Subject"] = f"[{today}]_リサーチ結果通知" 
+    msg["Subject"] = f"[{today}]_リサーチ結果通知"
 
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
@@ -140,6 +141,7 @@ msg["Subject"] = f"[{today}]_リサーチ結果通知"
     server.send_message(msg)
 
     server.quit()
+
 
 
 # =============================
