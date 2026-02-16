@@ -86,7 +86,7 @@ print(result_df)
 # =============================
 
 GMAIL = "shuya.tottori@gmail.com"
-PASS = "アプリパスワード"
+PASS = "hahcnnsngkoppvlk"
 
 
 def send_mail(msg):
