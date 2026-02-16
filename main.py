@@ -7,8 +7,8 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
 
-GMAIL = os.getenv("GMAIL_USER")
-PASS = os.getenv("GMAIL_PASS")
+GMAIL = os.getenv("MAIL_ADDRESS")
+PASS = os.getenv("MAIL_PASSWORD")
 TO = os.getenv("MAIL_TO", GMAIL)
 
 
