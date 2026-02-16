@@ -126,7 +126,10 @@ def send_mail(body):
     msg = MIMEMultipart()
     msg["From"] = MAIL_ADDRESS
     msg["To"] = MAIL_TO
-    msg["Subject"] = "📈 本日の株式AI分析レポート"
+   from datetime import datetime
+
+today = datetime.now().strftime("%-m/%-d")  # 例: 2/16（Linux用）
+msg["Subject"] = f"[{today}]_リサーチ結果通知" 
 
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
