@@ -1,8 +1,14 @@
 import pandas as pd
 import yfinance as yf
 from ta.momentum import RSIIndicator
+import smtplib
+from email.mime.text import MIMEText
 
-# Drive上のCSV
+
+# =============================
+# CSV読み込み
+# =============================
+
 CSV_PATH = "nikkei225.csv"
 
 df = pd.read_csv(CSV_PATH)
@@ -58,10 +64,7 @@ for code in codes:
             })
 
     except Exception as e:
-        print("=== エラー発生 ===")
-        print("銘柄:", code)
-        print("種類:", type(e))
-        print("内容:", e)
+        print("=== エラー ===", code, e)
         continue
 
 
@@ -71,26 +74,21 @@ for code in codes:
 
 result_df = pd.DataFrame(results)
 
-SAVE_PATH = "/content/drive/MyDrive/result_today.csv"
+SAVE_PATH = "result_today.csv"
 result_df.to_csv(SAVE_PATH, index=False, encoding="utf-8-sig")
 
-print("\n=== 今日の買い候補 ===")
+print("保存:", SAVE_PATH)
+print(result_df)
 
-if result_df.empty:
-    print("該当なし")
-else:
-    display(result_df)
 
-print("\n保存先:", SAVE_PATH)
+# =============================
+# メール送信
+# =============================
 
-import smtplib
-from email.mime.text import MIMEText
-
-# ===== 設定 =====
 GMAIL = "shuya.tottori@gmail.com"
-PASS = "aybhsvrafilebveo"
+PASS = "アプリパスワード"
 
-# ===== 送信関数 =====
+
 def send_mail(msg):
 
     body = MIMEText(msg, "plain", "utf-8")
@@ -103,7 +101,10 @@ def send_mail(msg):
         server.send_message(body)
 
 
-# ===== 結果作成 =====
+# =============================
+# 本文作成
+# =============================
+
 if not results:
     text = "今日の買い候補：なし"
 else:
@@ -111,5 +112,5 @@ else:
     for r in results:
         text += f"{r['code']}  ¥{r['price']}  RSI:{r['rsi']}\n"
 
-# ===== 送信 =====
+
 send_mail(text)
