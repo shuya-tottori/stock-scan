@@ -7,26 +7,23 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
 
-# ===== 環境変数（Secretsから取得）=====
-GMAIL = os.getenv("MAIL_ADDRESS")
-PASS = os.getenv("MAIL_PASSWORD")
+GMAIL = os.getenv("GMAIL_USER")
+PASS = os.getenv("GMAIL_PASS")
 TO = os.getenv("MAIL_TO", GMAIL)
 
 
-# ===== 銘柄リスト =====
 CODES = [
     "4502.T", "7203.T", "9432.T", "9984.T", "8306.T",
     "6758.T", "5401.T", "2502.T", "9501.T"
 ]
 
 
-# ===== RSI計算 =====
-def calc_rsi(series, period=14):
+def calc_rsi(close, period=14):
 
-    delta = series.diff()
+    delta = close.diff()
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
 
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
@@ -35,10 +32,9 @@ def calc_rsi(series, period=14):
 
     rsi = 100 - (100 / (1 + rs))
 
-    return rsi
+    return rsi.astype(float)
 
 
-# ===== 株分析 =====
 def analyze():
 
     results = []
@@ -59,40 +55,39 @@ def analyze():
 
             rsi = calc_rsi(close)
 
-            latest_price = round(close.iloc[-1], 1)
-            latest_rsi = round(rsi.iloc[-1], 1)
+            price = float(close.iloc[-1])
+            rsi_val = float(rsi.iloc[-1])
 
-            # 期待度判定（例）
-            if latest_rsi < 30:
-                level = "★★★★★（買い候補）"
-            elif latest_rsi < 40:
+            price = round(price, 1)
+            rsi_val = round(rsi_val, 1)
+
+            if rsi_val < 30:
+                level = "★★★★★"
+            elif rsi_val < 40:
                 level = "★★★★☆"
-            elif latest_rsi < 60:
+            elif rsi_val < 60:
                 level = "★★★☆☆"
-            elif latest_rsi < 70:
+            elif rsi_val < 70:
                 level = "★★☆☆☆"
             else:
-                level = "★☆☆☆☆（過熱）"
+                level = "★☆☆☆☆"
 
             results.append([
                 code,
-                latest_price,
-                latest_rsi,
+                price,
+                rsi_val,
                 level
             ])
 
         except Exception as e:
             print("Error:", code, e)
 
-    df = pd.DataFrame(
+    return pd.DataFrame(
         results,
         columns=["code", "price", "rsi", "expect"]
     )
 
-    return df
 
-
-# ===== メール送信 =====
 def send_mail(text):
 
     msg = MIMEMultipart()
@@ -103,17 +98,13 @@ def send_mail(text):
 
     msg.attach(MIMEText(text, "plain", "utf-8"))
 
-    server = smtplib.SMTP("smtp.gmail.com", 587)
-    server.starttls()
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
 
-    server.login(GMAIL, PASS)
-
-    server.send_message(msg)
-
-    server.quit()
+        server.starttls()
+        server.login(GMAIL, PASS)
+        server.send_message(msg)
 
 
-# ===== メイン処理 =====
 def main():
 
     df = analyze()
@@ -123,7 +114,6 @@ def main():
     else:
         body = df.to_string(index=False)
 
-    # CSV保存
     df.to_csv("result_today.csv", index=False, encoding="utf-8-sig")
 
     print("保存: result_today.csv")
