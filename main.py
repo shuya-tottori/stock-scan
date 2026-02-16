@@ -87,22 +87,21 @@ def analyze():
         columns=["code", "price", "rsi", "expect"]
     )
 
+def send_mail(msg):
 
-def send_mail(text):
+    if not GMAIL or not PASS:
+        raise ValueError("GMAIL_USER / GMAIL_PASS が未設定です")
 
-    msg = MIMEMultipart()
+    body = MIMEText(msg, "plain", "utf-8")
+    body["Subject"] = "株スキャン結果"
+    body["From"] = GMAIL
+    body["To"] = TO
 
-    msg["From"] = GMAIL
-    msg["To"] = TO
-    msg["Subject"] = "株スキャン結果 " + datetime.now().strftime("%Y-%m-%d")
-
-    msg.attach(MIMEText(text, "plain", "utf-8"))
-
-    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-
-        server.starttls()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(GMAIL, PASS)
-        server.send_message(msg)
+        server.send_message(body)
+
+
 
 
 def main():
