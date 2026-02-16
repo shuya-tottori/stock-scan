@@ -20,7 +20,7 @@ jobs:
 
       - name: Install packages
         run: |
-          pip install yfinance ta pandas
+          pip install yfinance ta pandas numpy scikit-learn
 
       - name: Run script
         env:
