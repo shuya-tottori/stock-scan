@@ -110,7 +110,7 @@ def judge_level(rsi, ma5, ma25, ai_prob):
     elif rsi < 35 and ai_prob > 0.6:
         return "★★（買い）"
 
-    elif rsi < 40 and ai_prob > 0.5:
+    elif rsi < 40 and ai_prob > 0.48:
         return "★（弱い買い）"
 
     else:
