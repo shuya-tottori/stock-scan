@@ -2,7 +2,8 @@ name: Stock Scan
 
 on:
   schedule:
-    - cron: "0 13 * * *"   # 日本時間22時
+    # 日本時間 22:00 = UTC 13:00
+    - cron: "0 13 * * *"  
   workflow_dispatch:
 
 jobs:
@@ -10,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: write  # Artifactsの操作に必要
+      actions: write
 
     steps:
       - name: Checkout
@@ -25,7 +26,7 @@ jobs:
         run: |
           pip install yfinance pandas numpy scikit-learn
 
-      # 【追加】前回の結果をダウンロード
+      # 前回の解析結果（recommended.csv）をダウンロード
       - name: Download last result
         uses: actions/download-artifact@v4
         with:
@@ -41,10 +42,10 @@ jobs:
         run: |
           python main.py
 
-      # 【追加】今回の結果をアップロード（保存）
+      # 今回の解析結果を保存
       - name: Upload new result
         uses: actions/upload-artifact@v4
         with:
           name: last-recommendations
           path: recommended.csv
-          retention-days: 7  # 7日間保存
+          retention-days: 7
