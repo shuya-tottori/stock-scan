@@ -5,7 +5,7 @@ import numpy as np
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-
+from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
 
 
@@ -39,11 +39,9 @@ CODES = [
 # =============================
 
 def get_stock_name(code):
-
     try:
         info = yf.Ticker(code).info
         return info.get("shortName", "不明")
-
     except:
         return "不明"
 
@@ -53,19 +51,13 @@ def get_stock_name(code):
 # =============================
 
 def calc_rsi(series, period=14):
-
     delta = series.diff()
-
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
-
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
-
     rs = avg_gain / avg_loss
-
     rsi = 100 - (100 / (1 + rs))
-
     return rsi
 
 
@@ -84,6 +76,9 @@ def train_ai(df):
 
     df = df.dropna()
 
+    if len(df) < 50:
+        return None, None, None
+
     X = df[["Close", "MA5", "MA25", "RSI", "Volume"]]
     y = df["Target"]
 
@@ -95,7 +90,10 @@ def train_ai(df):
 
     model.fit(X, y)
 
-    return model, X.iloc[-1:]
+    latest_row = X.iloc[-1:]
+    prob = model.predict_proba(latest_row)[0][1]
+
+    return model, latest_row, prob
 
 
 # =============================
@@ -110,38 +108,14 @@ def judge_level(rsi, ma5, ma25, ai_prob):
     elif rsi < 35 and ai_prob > 0.6:
         return "★★（買い）"
 
-    elif rsi < 40 and ai_prob > 0.48:
+    elif rsi < 40 and ai_prob > 0.55:
         return "★（弱い買い）"
+
+    elif rsi < 50 and ai_prob > 0.5:
+        return "△（様子見候補）"
 
     else:
         return "対象外"
-
-
-# =============================
-# メール送信
-# =============================
-
-def send_mail(body):
-
-    from datetime import datetime
-
-    today = datetime.now().strftime("%-m/%-d")
-
-    msg = MIMEMultipart()
-    msg["From"] = MAIL_ADDRESS
-    msg["To"] = MAIL_TO
-    msg["Subject"] = f"[{today}]_リサーチ結果通知"
-
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    server = smtplib.SMTP("smtp.gmail.com", 587)
-    server.starttls()
-    server.login(MAIL_ADDRESS, MAIL_PASSWORD)
-
-    server.send_message(msg)
-
-    server.quit()
-
 
 
 # =============================
@@ -150,112 +124,89 @@ def send_mail(body):
 
 def main():
 
-    print(f"銘柄数: {len(CODES)}")
-
-    body = "【本日の注目銘柄（AI分析）】\n\n"
-
-    results = []
+    strong_list = []
+    watch_list = []
 
     for code in CODES:
 
-        print("分析中:", code)
+        df = yf.download(code, period="6mo", progress=False)
 
-        try:
+        if df.empty:
+            continue
 
-            df = yf.download(
-                code,
-                period="2y",
-                interval="1d",
-                progress=False
-            )
+        model, latest_row, ai_prob = train_ai(df)
 
-            if len(df) < 200:
-                continue
+        if model is None:
+            continue
 
-            close = df["Close"]
-            volume = df["Volume"]
+        rsi = df["Close"].rolling(14).apply(lambda x: calc_rsi(x).iloc[-1])
+        rsi = calc_rsi(df["Close"]).iloc[-1]
 
-            rsi = calc_rsi(close)
+        ma5 = df["Close"].rolling(5).mean().iloc[-1]
+        ma25 = df["Close"].rolling(25).mean().iloc[-1]
 
-            price = close.iloc[-1].item()
-            rsi_val = rsi.iloc[-1].item()
+        level = judge_level(rsi, ma5, ma25, ai_prob)
 
-            ma5 = close.rolling(5).mean().iloc[-1]
-            ma25 = close.rolling(25).mean().iloc[-1]
+        if level == "対象外":
+            continue
 
-            vol_now = volume.iloc[-1]
-            vol_avg = volume.rolling(20).mean().iloc[-1]
+        name = get_stock_name(code)
 
-            volume_ok = vol_now > vol_avg
-            trend_up = ma5 > ma25
-
-            # ===== AI予測 =====
-            model, latest = train_ai(df)
-
-            prob = model.predict_proba(latest)[0][1]
-
-            # ===== レベル =====
-            level = judge_level(rsi_val, ma5, ma25, prob)
-
-            if rsi_val < 45 and trend_up and volume_ok:
-
-                name = get_stock_name(code)
-
-                body += f"""
-■ {name} ({code})
-株価：{round(price,1)}円
-RSI：{round(rsi_val,1)}
-出来高：{'↑' if volume_ok else '-'}
-AI上昇確率：{round(prob*100,1)}%
-レベル：{level}
-
-"""
-
-                results.append([
-                    code,
-                    name,
-                    price,
-                    rsi_val,
-                    prob,
-                    level
-                ])
-
-        except Exception as e:
-
-            print("Error:", code, e)
-
-
-    # CSV保存
-    if results:
-
-        df_out = pd.DataFrame(
-            results,
-            columns=[
-                "Code",
-                "Name",
-                "Price",
-                "RSI",
-                "AI_Prob",
-                "Level"
-            ]
+        stock_text = (
+            f"■ {name} ({code})\n"
+            f"現在値: {df['Close'].iloc[-1]:.0f}円\n"
+            f"RSI: {rsi:.1f}\n"
+            f"AI上昇確率: {ai_prob:.2%}\n"
+            f"判定: {level}\n\n"
         )
 
-        df_out.to_csv("result_today.csv", index=False)
+        if "★" in level:
+            strong_list.append(stock_text)
+        elif "△" in level:
+            watch_list.append(stock_text)
 
-        print("保存: result_today.csv")
+    # =============================
+    # メール本文作成
+    # =============================
 
+    today = datetime.now()
+    date_str = today.strftime("%Y年%m月%d日")
 
-    if len(results) == 0:
-        body += "本日は該当銘柄なし\n"
+    body = f"【{date_str} 銘柄レポート】\n\n"
 
+    # 毎月15日は注意文
+    if today.day == 15:
+        body += "⚠️【お知らせ】\n"
+        body += "月に一度はGitHub Actionsを手動実行しましょう。\n"
+        body += "（自動停止防止のため）\n\n"
 
-    send_mail(body)
+    if strong_list:
+        body += "■ 本日の注目銘柄\n\n"
+        body += "".join(strong_list)
 
+    if watch_list:
+        body += "■ 様子見候補（参考）\n\n"
+        body += "".join(watch_list)
 
-# =============================
-# 実行
-# =============================
+    if not strong_list and not watch_list:
+        body += "本日は該当なし\n"
+
+    # =============================
+    # メール送信
+    # =============================
+
+    msg = MIMEMultipart()
+    msg["From"] = MAIL_ADDRESS
+    msg["To"] = MAIL_TO
+    msg["Subject"] = f"{date_str} 株式スキャン結果"
+
+    msg.attach(MIMEText(body, "plain"))
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(MAIL_ADDRESS, MAIL_PASSWORD)
+        server.send_message(msg)
+
 
 if __name__ == "__main__":
-
     main()
