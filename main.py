@@ -8,7 +8,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestClassifier
-from concurrent.futures import ThreadPoolExecutor
 
 # =============================
 # 設定
@@ -24,32 +23,19 @@ SAVE_FILE = "recommended.csv"
 MY_PORTFOLIO = ["9432.T", "8001.T", "8031.T", "8316.T", "1605.T", "4503.T", "8697.T", "8766.T"]
 
 # =============================
-# 粘り強いデータ取得関数
+# 1銘柄ずつ取得して解析する関数
 # =============================
-def fetch_data_robust(tickers, period="1y"):
-    """失敗しても3回までリトライするデータ取得"""
-    for i in range(3):
-        try:
-            data = yf.download(tickers, period=period, progress=False, group_by='ticker')
-            if not data.empty:
-                return data
-        except Exception as e:
-            print(f"データ取得失敗 (試行 {i+1}): {e}")
-        time.sleep(2) # 2秒待ってリトライ
-    return pd.DataFrame()
-
-# =============================
-# 解析ロジック
-# =============================
-def analyze_stock(code, all_data, ext_factors):
+def get_and_analyze(code, ext_factors, is_portfolio=False):
     try:
-        # group_by='ticker' の場合のデータ抽出
-        if code not in all_data.columns.levels[0]: return None
-        df = all_data[code].copy().dropna(subset=['Close'])
+        # 1銘柄だけダウンロード（これが一番確実）
+        df = yf.download(code, period="1y", progress=False)
+        if df.empty or len(df) < 40: return None
         
-        if len(df) < 40: return None
-        last_price = df['Close'].iloc[-1]
+        last_price = float(df['Close'].iloc[-1])
         
+        # 予算チェック（保有銘柄以外）
+        if not is_portfolio and last_price > BUDGET_LIMIT: return None
+
         # 特徴量
         df['Return'] = df['Close'].pct_change()
         delta = df['Close'].diff()
@@ -57,94 +43,98 @@ def analyze_stock(code, all_data, ext_factors):
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         df['RSI'] = 100 - (100 / (1 + (gain / loss.replace(0, np.nan))))
         
-        df['US_Stock_Effect'] = ext_factors[0]
-        df['USD_JPY_Effect'] = ext_factors[2]
+        # 世界情勢（米国株・ドル円）を結合
+        df['US_Stock'] = ext_factors[0]
+        df['USD_JPY'] = ext_factors[2]
         
         df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
         df_train = df.dropna()
+        
         if len(df_train) < 20: return None
 
-        features = ['Return', 'RSI', 'US_Stock_Effect', 'USD_JPY_Effect']
-        model = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
+        features = ['Return', 'RSI', 'US_Stock', 'USD_JPY']
+        model = RandomForestClassifier(n_estimators=30, max_depth=5, random_state=42)
         model.fit(df_train[features], df_train['Target'])
-        prob = model.predict_proba(df_train[features].iloc[-1:])[0][1]
+        prob = float(model.predict_proba(df_train[features].iloc[-1:])[0][1])
         
-        # 判定
         level = "対象外"
-        if prob > 0.62: level = "🔥 超お宝株(激アツ)"
-        elif prob > 0.55: level = "★★★ 厳選お宝株"
+        if prob > 0.60: level = "🔥 超お宝株"
+        elif prob > 0.53: level = "★★★ 厳選お宝株"
         elif prob > 0.48: level = "★ お宝候補"
 
-        if level == "対象外" and code not in MY_PORTFOLIO: return None
-
-        return {"code": code, "price": last_price, "prob": prob, "level": level, "rsi": df['RSI'].iloc[-1]}
-    except: return None
+        return {
+            "code": code, "price": last_price, "prob": prob, 
+            "level": level, "rsi": float(df['RSI'].iloc[-1])
+        }
+    except:
+        return None
 
 # =============================
 # メイン
 # =============================
 def main():
-    print("--- グローバルAI解析開始 ---")
+    print("--- 安定版AI解析開始 ---")
     
-    # 世界情勢取得 (ここもリトライ)
-    ext_data = fetch_data_robust(["JPY=X", "^GSPC"], period="5d")
+    # 世界情勢の取得
+    ext_data = yf.download(["^GSPC", "JPY=X"], period="5d", progress=False)['Close']
     try:
-        us_stock_change = (ext_data["^GSPC"]["Close"].iloc[-1] / ext_data["^GSPC"]["Close"].iloc[-2]) - 1
-        usd_jpy_rate = ext_data["JPY=X"]["Close"].iloc[-1]
-        usd_jpy_change = (ext_data["JPY=X"]["Close"].iloc[-1] / ext_data["JPY=X"]["Close"].iloc[-2]) - 1
+        us_change = (ext_data["^GSPC"].iloc[-1] / ext_data["^GSPC"].iloc[-2]) - 1
+        usd_jpy = ext_data["JPY=X"].iloc[-1]
+        usd_change = (ext_data["JPY=X"].iloc[-1] / ext_data["JPY=X"].iloc[-2]) - 1
     except:
-        us_stock_change, usd_jpy_rate, usd_jpy_change = 0.0, 0.0, 0.0
+        us_change, usd_jpy, usd_change = 0.0, 150.0, 0.0
 
-    ext_factors = (us_stock_change, usd_jpy_rate, usd_jpy_change)
-    
+    ext_factors = (us_change, usd_jpy, usd_change)
+
     # 銘柄リスト
     df_codes = pd.read_csv("nikkei225.csv", header=None)
-    base_codes = [str(c).zfill(4) + ".T" for c in df_codes.iloc[:, 0]]
-    all_target_codes = list(set(base_codes + MY_PORTFOLIO))
-    
-    # 全データ一括取得
-    all_data = fetch_data_robust(all_target_codes, period="1y")
-    if all_data.empty:
-        print("データが取得できませんでした")
-        return
+    codes = [str(c).zfill(4) + ".T" for c in df_codes.iloc[:, 0]]
 
-    results = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(analyze_stock, code, all_data, ext_factors) for code in all_target_codes]
-        results = [f.result() for f in futures if f.result() is not None]
-
-    # メールの組み立て
-    market_status = "強気" if us_stock_change > 0.003 else ("弱気" if us_stock_change < -0.003 else "慎重")
-    market_comment = f"【AI自信度ランク：{market_status}】\n米国株影響：{us_stock_change:.2%}\nドル円：{usd_jpy_rate:.2f}円\n"
-
-    # 1. 保有銘柄診断
-    portfolio_report = "＜保有銘柄 健康診断＞\n"
+    # 1. 保有銘柄の解析
+    portfolio_results = []
+    print("保有銘柄チェック中...")
     for code in MY_PORTFOLIO:
-        res = next((r for r in results if r['code'] == code), None)
-        if res:
-            status = "✨ 買い増し狙い目！" if res['rsi'] < 45 else ("🚀 絶好調" if res['rsi'] > 65 else "☕ 安定")
-            portfolio_report += f"・{code}: {res['price']:.0f}円 ({status})\n"
-        else:
-            portfolio_report += f"・{code}: 取得失敗\n"
+        res = get_and_analyze(code, ext_factors, is_portfolio=True)
+        if res: portfolio_results.append(res)
+        time.sleep(0.5) # サーバーに優しく
 
-    # 2. 厳選銘柄
-    recommendations = [r for r in results if r['code'] not in MY_PORTFOLIO and r['level'] != "対象外" and r['price'] <= BUDGET_LIMIT]
-    recommendations.sort(key=lambda x: x['prob'], reverse=True)
-    top_hits = recommendations[:8]
+    # 2. 全銘柄からお宝探し（時間がかかるので上位のみメール）
+    print("全銘柄スキャン中...")
+    all_hits = []
+    for code in codes:
+        if code in MY_PORTFOLIO: continue
+        res = get_and_analyze(code, ext_factors)
+        if res and res['level'] != "対象外":
+            all_hits.append(res)
+        # 1銘柄ごとにわずかに待機
+        time.sleep(0.2)
+
+    all_hits.sort(key=lambda x: x['prob'], reverse=True)
+    top_hits = all_hits[:8]
     if top_hits: pd.DataFrame(top_hits).to_csv(SAVE_FILE, index=False)
 
-    # 3. 送信
+    # 3. メールの組み立て
+    status = "強気" if us_change > 0.003 else ("弱気" if us_change < -0.003 else "慎重")
     now = datetime.now() + timedelta(hours=9)
-    body = f"【AIグローバルレポート - {now.strftime('%Y/%m/%d %H:%M')}】\n\n{market_comment}\n{portfolio_report}\n"
-    body += "─"*20 + "\n\n＜本日の厳選お宝銘柄（2000円以下）＞\n"
+    
+    body = f"【AI解析レポート - {now.strftime('%Y/%m/%d %H:%M')}】\n\n"
+    body += f"自信度：{status}\n米国株：{us_change:.2%}\nドル円：{usd_jpy:.2f}円\n\n"
+    
+    body += "＜保有銘柄 健康診断＞\n"
+    for r in portfolio_results:
+        diag = "✨ 買い増し狙い目！" if r['rsi'] < 45 else ("🚀 絶好調" if r['rsi'] > 65 else "☕ 安定")
+        body += f"・{r['code']}: {r['price']:.0f}円 ({diag})\n"
+
+    body += "\n" + "─"*20 + "\n\n＜本日の厳選お宝銘柄＞\n"
     if top_hits:
         for r in top_hits:
-            body += f"■ {r['code']}\n判定: {r['level']} (AI確率:{r['prob']:.1%})\n価格: {r['price']:.0f}円\n\n"
+            body += f"■ {r['code']}\n判定: {r['level']} (確率:{r['prob']:.1%})\n価格: {r['price']:.0f}円\n\n"
     else:
-        body += "該当なし（慎重相場です）☕\n"
+        body += "該当なし（今は待ちの姿勢です）☕\n"
 
+    # 送信
     msg = MIMEMultipart()
-    msg["Subject"] = f"【AI解析】自信度:{market_status} {now.strftime('%H:%M')}"
+    msg["Subject"] = f"【AI解析】自信度:{status} {now.strftime('%H:%M')}"
     msg["From"], msg["To"] = MAIL_ADDRESS, MAIL_TO
     msg.attach(MIMEText(body, "plain"))
     
@@ -152,6 +142,7 @@ def main():
         server.starttls()
         server.login(MAIL_ADDRESS, MAIL_PASSWORD)
         server.send_message(msg)
+    print("完了！")
 
 if __name__ == "__main__":
     main()
