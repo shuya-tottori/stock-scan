@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 # =============================
 MAIL_ADDRESS = os.getenv("MAIL_ADDRESS")
 MAIL_PASSWORD = os.getenv("MAIL_PASSWORD")
-# 宛先が空の場合は自分のアドレスを使う
+# 宛先が空なら自分に送る（エラー防止）
 MAIL_TO = os.getenv("MAIL_TO") if os.getenv("MAIL_TO") else MAIL_ADDRESS
 
 BUDGET_LIMIT = 2000 
@@ -38,7 +38,7 @@ def analyze_stock(code, data):
         if len(df) < 50: return None
 
         last_price = df['Close'].iloc[-1]
-        # 予算フィルター
+        # 予算フィルター（1株2000円以下）
         if last_price > BUDGET_LIMIT: return None
 
         # 特徴量作成
@@ -56,26 +56,32 @@ def analyze_stock(code, data):
         
         prob = model.predict_proba(X.iloc[-1:])[0][1]
         
+        # 判定文言のアップデート
         level = "対象外"
-        if prob > 0.68: level = "★注目株"
-        elif prob > 0.62: level = "次点"
+        if prob > 0.68: 
+            level = "★★★ 厳選お宝株"
+        elif prob > 0.62: 
+            level = "★ お宝候補（要チェック）"
 
         if level == "対象外": return None
 
         ticker = yf.Ticker(code)
         name = ticker.info.get('shortName', code)
 
-        return {"code": code, "name": name, "price": last_price, "prob": prob, "level": level, "rsi": df['RSI'].iloc[-1]}
+        return {
+            "code": code, "name": name, "price": last_price, 
+            "prob": prob, "level": level, "rsi": df['RSI'].iloc[-1]
+        }
     except: return None
 
 # =============================
-# メイン
+# メイン処理
 # =============================
 
 def main():
     print("--- 解析開始 ---")
     if not os.path.exists("nikkei225.csv"):
-        print("Error: nikkei225.csv missing")
+        print("Error: nikkei225.csv が見つかりません。")
         return
 
     df_codes = pd.read_csv("nikkei225.csv", header=None)
@@ -112,17 +118,17 @@ def main():
     results.sort(key=lambda x: x['prob'], reverse=True)
     top_hits = results[:8]
 
-    # --- 3. 今回の結果を保存 ---
+    # --- 3. 今回の結果を保存（明日の答え合わせ用） ---
     if top_hits:
         pd.DataFrame(top_hits).to_csv(SAVE_FILE, index=False)
 
     # --- 4. メール作成・送信 ---
+    # 日本時間に変換
     now_jst = datetime.now() + timedelta(hours=9)
     time_str = now_jst.strftime("%Y/%m/%d %H:%M")
     
-    # 宛先チェック
     if not MAIL_TO or "@" not in str(MAIL_TO):
-        print(f"送信中止: 宛先が無効です (MAIL_TO: {MAIL_TO})")
+        print(f"送信エラー: 宛先が不正です (MAIL_TO: {MAIL_TO})")
         return
 
     body = f"【AIスキャン結果レポート - {time_str}】\n\n"
@@ -131,9 +137,11 @@ def main():
     
     if top_hits:
         for r in top_hits:
-            body += f"■ {r['name']} ({r['code']})\n判定: {r['level']} / AI確率: {r['prob']:.1%}\n価格: {r['price']:.0f}円 / RSI: {r['rsi']:.1f}\n\n"
+            body += f"■ {r['name']} ({r['code']})\n"
+            body += f"判定: {r['level']} / AI確率: {r['prob']:.1%}\n"
+            body += f"価格: {r['price']:.0f}円 / RSI: {r['rsi']:.1f}\n\n"
     else:
-        body += "該当なし\n"
+        body += "本日、条件をクリアした銘柄はありませんでした。\n"
 
     try:
         msg = MIMEMultipart()
@@ -147,7 +155,7 @@ def main():
             server.send_message(msg)
         print(f"メール送信完了！宛先: {MAIL_TO}")
     except Exception as e:
-        print(f"メール送信エラー: {e}")
+        print(f"メール送信失敗: {e}")
 
 if __name__ == "__main__":
     main()
