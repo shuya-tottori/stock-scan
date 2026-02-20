@@ -42,7 +42,7 @@ def get_stock_name(code):
     try:
         info = yf.Ticker(code).info
         return info.get("shortName", "不明")
-    except:
+    except Exception:
         return "不明"
 
 
@@ -52,13 +52,29 @@ def get_stock_name(code):
 
 def calc_rsi(series, period=14):
     delta = series.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss
+
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
     return rsi
+
+
+# =============================
+# yfinance列安全化
+# =============================
+
+def normalize_columns(df):
+    """
+    yfinanceがMultiIndexで返す場合に対応
+    必ず通常の1階層カラムにする
+    """
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
 
 
 # =============================
@@ -66,6 +82,18 @@ def calc_rsi(series, period=14):
 # =============================
 
 def train_ai(df):
+
+    df = normalize_columns(df)
+
+    # 必須列チェック
+    required_cols = ["Close", "Volume"]
+    for col in required_cols:
+        if col not in df.columns:
+            return None, None, None
+
+    # Closeを必ずSeriesに
+    if isinstance(df["Close"], pd.DataFrame):
+        df["Close"] = df["Close"].iloc[:, 0]
 
     df["MA5"] = df["Close"].rolling(5).mean()
     df["MA25"] = df["Close"].rolling(25).mean()
@@ -129,9 +157,17 @@ def main():
 
     for code in CODES:
 
-        df = yf.download(code, period="6mo", progress=False)
+        try:
+            df = yf.download(
+                code,
+                period="6mo",
+                progress=False,
+                auto_adjust=True
+            )
+        except Exception:
+            continue
 
-        if df.empty:
+        if df is None or df.empty:
             continue
 
         model, latest_row, ai_prob = train_ai(df)
@@ -139,9 +175,7 @@ def main():
         if model is None:
             continue
 
-        rsi = df["Close"].rolling(14).apply(lambda x: calc_rsi(x).iloc[-1])
         rsi = calc_rsi(df["Close"]).iloc[-1]
-
         ma5 = df["Close"].rolling(5).mean().iloc[-1]
         ma25 = df["Close"].rolling(25).mean().iloc[-1]
 
@@ -174,10 +208,10 @@ def main():
 
     body = f"【{date_str} 銘柄レポート】\n\n"
 
-    # 毎月15日は注意文
+    # 毎月15日注意文
     if today.day == 15:
-        body += "⚠️【お知らせ】\n"
-        body += "月に一度はGitHub Actionsを手動実行しましょう。\n"
+        body += "【お知らせ】\n"
+        body += "月に一度はGitHub Actionsを手動実行してください。\n"
         body += "（自動停止防止のため）\n\n"
 
     if strong_list:
