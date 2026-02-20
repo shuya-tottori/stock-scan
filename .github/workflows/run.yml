@@ -2,7 +2,8 @@ name: Stock Scan
 
 on:
   schedule:
-    - cron: "0 23 * * *"   # 日本時間8時
+    # 日本時間 22:00 = UTC 13:00
+    - cron: "0 13 * * *"  
   workflow_dispatch:
 
 jobs:
@@ -20,11 +21,13 @@ jobs:
 
       - name: Install packages
         run: |
-          pip install yfinance ta pandas numpy scikit-learn
+          pip install yfinance pandas numpy scikit-learn
 
       - name: Run script
         env:
           MAIL_ADDRESS: ${{ secrets.MAIL_ADDRESS }}
           MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          # MAIL_TOを設定している場合はここにも追加
+          MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
           python main.py
