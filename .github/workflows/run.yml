@@ -1,9 +1,8 @@
-name: Stock Scan
+name: Stock Scan High-End
 
 on:
   schedule:
-    # 日本時間 22:00 = UTC 13:00
-    - cron: "0 13 * * *"  
+    - cron: "0 13 * * *"  # 日本時間 22:00
   workflow_dispatch:
 
 jobs:
@@ -26,7 +25,6 @@ jobs:
         run: |
           pip install yfinance pandas numpy scikit-learn
 
-      # 前回保存したおすすめ銘柄をダウンロード
       - name: Download last result
         uses: actions/download-artifact@v4
         with:
@@ -42,7 +40,6 @@ jobs:
         run: |
           python main.py
 
-      # 今回の解析結果を次回の答え合わせ用に保存
       - name: Upload new result
         uses: actions/upload-artifact@v4
         with:
