@@ -10,7 +10,7 @@ from sklearn.ensemble import RandomForestClassifier
 
 
 # =============================
-# 環境変数（GitHub Secrets用）
+# 環境変数（GitHub Secrets）
 # =============================
 
 MAIL_ADDRESS = os.getenv("MAIL_ADDRESS")
@@ -19,31 +19,20 @@ MAIL_TO = os.getenv("MAIL_TO", MAIL_ADDRESS)
 
 
 # =============================
-# 銘柄リスト
+# 日経225コード読み込み（列名なし）
 # =============================
 
-CODES = [
-    "7203.T",
-    "6758.T",
-    "9432.T",
-    "9984.T",
-    "8306.T",
-    "4502.T",
-    "4503.T",
-    "9501.T",
-]
+def load_codes_from_csv():
+    df = pd.read_csv("nikkei225.csv", header=None)
 
+    codes = (
+        df.iloc[:, 0]
+        .astype(str)
+        .str.zfill(4)
+        + ".T"
+    )
 
-# =============================
-# 銘柄名取得
-# =============================
-
-def get_stock_name(code):
-    try:
-        info = yf.Ticker(code).info
-        return info.get("shortName", "不明")
-    except Exception:
-        return "不明"
+    return codes.tolist()
 
 
 # =============================
@@ -64,34 +53,38 @@ def calc_rsi(series, period=14):
 
 
 # =============================
-# yfinance列安全化
+# yfinance列正規化（MultiIndex対策）
 # =============================
 
 def normalize_columns(df):
-    """
-    yfinanceがMultiIndexで返す場合に対応
-    必ず通常の1階層カラムにする
-    """
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
 
 
 # =============================
-# AIモデル作成
+# 銘柄名取得
+# =============================
+
+def get_stock_name(code):
+    try:
+        info = yf.Ticker(code).info
+        return info.get("shortName", "不明")
+    except Exception:
+        return "不明"
+
+
+# =============================
+# AIモデル
 # =============================
 
 def train_ai(df):
 
     df = normalize_columns(df)
 
-    # 必須列チェック
-    required_cols = ["Close", "Volume"]
-    for col in required_cols:
-        if col not in df.columns:
-            return None, None, None
+    if "Close" not in df.columns or "Volume" not in df.columns:
+        return None, None, None
 
-    # Closeを必ずSeriesに
     if isinstance(df["Close"], pd.DataFrame):
         df["Close"] = df["Close"].iloc[:, 0]
 
@@ -125,7 +118,7 @@ def train_ai(df):
 
 
 # =============================
-# 買いレベル判定
+# 判定ロジック
 # =============================
 
 def judge_level(rsi, ma5, ma25, ai_prob):
@@ -155,6 +148,9 @@ def main():
     strong_list = []
     watch_list = []
 
+    CODES = load_codes_from_csv()
+    print(f"監視銘柄数: {len(CODES)}")
+
     for code in CODES:
 
         try:
@@ -174,6 +170,8 @@ def main():
 
         if model is None:
             continue
+
+        df = normalize_columns(df)
 
         rsi = calc_rsi(df["Close"]).iloc[-1]
         ma5 = df["Close"].rolling(5).mean().iloc[-1]
@@ -200,7 +198,7 @@ def main():
             watch_list.append(stock_text)
 
     # =============================
-    # メール本文作成
+    # メール作成
     # =============================
 
     today = datetime.now()
@@ -208,7 +206,6 @@ def main():
 
     body = f"【{date_str} 銘柄レポート】\n\n"
 
-    # 毎月15日注意文
     if today.day == 15:
         body += "【お知らせ】\n"
         body += "月に一度はGitHub Actionsを手動実行してください。\n"
@@ -224,10 +221,6 @@ def main():
 
     if not strong_list and not watch_list:
         body += "本日は該当なし\n"
-
-    # =============================
-    # メール送信
-    # =============================
 
     msg = MIMEMultipart()
     msg["From"] = MAIL_ADDRESS
