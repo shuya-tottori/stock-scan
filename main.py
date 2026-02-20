@@ -7,233 +7,142 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
-
+from concurrent.futures import ThreadPoolExecutor
 
 # =============================
-# 環境変数（GitHub Secrets）
+# 設定
 # =============================
-
 MAIL_ADDRESS = os.getenv("MAIL_ADDRESS")
 MAIL_PASSWORD = os.getenv("MAIL_PASSWORD")
 MAIL_TO = os.getenv("MAIL_TO", MAIL_ADDRESS)
 
-
 # =============================
-# 日経225コード読み込み（列名なし）
+# 補助関数
 # =============================
 
-def load_codes_from_csv():
+def load_codes():
     df = pd.read_csv("nikkei225.csv", header=None)
-
-    codes = (
-        df.iloc[:, 0]
-        .astype(str)
-        .str.zfill(4)
-        + ".T"
-    )
-
-    return codes.tolist()
-
-
-# =============================
-# RSI計算
-# =============================
+    return [str(c).zfill(4) + ".T" for c in df.iloc[:, 0]]
 
 def calc_rsi(series, period=14):
     delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
 
 # =============================
-# yfinance列正規化（MultiIndex対策）
+# AI学習 & 判定ロジック
 # =============================
 
-def normalize_columns(df):
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
-
-
-# =============================
-# 銘柄名取得
-# =============================
-
-def get_stock_name(code):
+def analyze_stock(code, data):
+    """
+    1銘柄ずつの学習と判定を行う関数（並列実行用）
+    """
     try:
-        info = yf.Ticker(code).info
-        return info.get("shortName", "不明")
+        # MultiIndexからのデータ抽出
+        df = data.xs(code, axis=1, level=1).copy() if isinstance(data.columns, pd.MultiIndex) else data.copy()
+        df.dropna(subset=['Close'], inplace=True)
+        
+        if len(df) < 50: return None
+
+        # --- 特徴量エンジニアリング ---
+        df['Return'] = df['Close'].pct_change()
+        df['MA5'] = df['Close'].rolling(5).mean()
+        df['MA25'] = df['Close'].rolling(25).mean()
+        df['Diff_MA5'] = (df['Close'] - df['MA5']) / df['MA5'] # 移動平均乖離率
+        df['RSI'] = calc_rsi(df['Close'])
+        df['Vol_Change'] = df['Volume'].pct_change()
+        
+        # 目的変数：翌日の終値がプラスか
+        df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
+        
+        df_train = df.dropna()
+        if len(df_train) < 30: return None
+
+        # 特徴量選択
+        features = ['Return', 'Diff_MA5', 'RSI', 'Vol_Change']
+        X = df_train[features]
+        y = df_train['Target']
+
+        # 学習
+        model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+        model.fit(X, y)
+
+        # 最新予測
+        latest_row = X.iloc[-1:]
+        prob = model.predict_proba(latest_row)[0][1]
+        
+        # 判定
+        last_rsi = df['RSI'].iloc[-1]
+        last_close = df['Close'].iloc[-1]
+        level = "対象外"
+        
+        if last_rsi < 30 and prob > 0.7: level = "★★★（激アツ）"
+        elif last_rsi < 35 and prob > 0.6: level = "★★（買い）"
+        elif last_rsi < 45 and prob > 0.55: level = "★（弱気買い）"
+        elif prob > 0.65: level = "△（AI注目）"
+
+        if level == "対象外": return None
+
+        return {
+            "code": code,
+            "price": last_close,
+            "rsi": last_rsi,
+            "prob": prob,
+            "level": level
+        }
     except Exception:
-        return "不明"
-
-
-# =============================
-# AIモデル
-# =============================
-
-def train_ai(df):
-
-    df = normalize_columns(df)
-
-    if "Close" not in df.columns or "Volume" not in df.columns:
-        return None, None, None
-
-    if isinstance(df["Close"], pd.DataFrame):
-        df["Close"] = df["Close"].iloc[:, 0]
-
-    df["MA5"] = df["Close"].rolling(5).mean()
-    df["MA25"] = df["Close"].rolling(25).mean()
-    df["RSI"] = calc_rsi(df["Close"])
-
-    df["Tomorrow"] = df["Close"].shift(-1)
-    df["Target"] = (df["Tomorrow"] > df["Close"]).astype(int)
-
-    df = df.dropna()
-
-    if len(df) < 50:
-        return None, None, None
-
-    X = df[["Close", "MA5", "MA25", "RSI", "Volume"]]
-    y = df["Target"]
-
-    model = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=6,
-        random_state=42
-    )
-
-    model.fit(X, y)
-
-    latest_row = X.iloc[-1:]
-    prob = model.predict_proba(latest_row)[0][1]
-
-    return model, latest_row, prob
-
-
-# =============================
-# 判定ロジック
-# =============================
-
-def judge_level(rsi, ma5, ma25, ai_prob):
-
-    if rsi < 30 and ma5 > ma25 and ai_prob > 0.7:
-        return "★★★（強い買い）"
-
-    elif rsi < 35 and ai_prob > 0.6:
-        return "★★（買い）"
-
-    elif rsi < 40 and ai_prob > 0.55:
-        return "★（弱い買い）"
-
-    elif rsi < 50 and ai_prob > 0.5:
-        return "△（様子見候補）"
-
-    else:
-        return "対象外"
-
+        return None
 
 # =============================
 # メイン処理
 # =============================
 
 def main():
+    codes = load_codes()
+    print(f"データ取得中... ({len(codes)}銘柄)")
+    
+    # 1. 一括ダウンロード（これが一番速い）
+    all_data = yf.download(codes, period="1y", interval="1d", progress=False)
 
-    strong_list = []
-    watch_list = []
+    print("AI解析実行中...")
+    results = []
+    
+    # 2. 並列処理で全銘柄を一気に解析
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(analyze_stock, code, all_data) for code in codes]
+        for f in futures:
+            res = f.result()
+            if res: results.append(res)
 
-    CODES = load_codes_from_csv()
-    print(f"監視銘柄数: {len(CODES)}")
+    # 3. メール本文作成
+    date_str = datetime.now().strftime("%Y/%m/%d")
+    body = f"【{date_str} 株式解析レポート】\n\n"
+    
+    # レベル順にソート
+    results.sort(key=lambda x: x['prob'], reverse=True)
+    
+    if not results:
+        body += "本日の注目銘柄はありません。"
+    else:
+        for r in results:
+            body += f"■ {r['code']}\n"
+            body += f"判定: {r['level']}\n"
+            body += f"株価: {r['price']:.0f}円 / RSI: {r['rsi']:.1f} / 上昇確率: {r['prob']:.1%}\n\n"
 
-    for code in CODES:
-
-        try:
-            df = yf.download(
-                code,
-                period="6mo",
-                progress=False,
-                auto_adjust=True
-            )
-        except Exception:
-            continue
-
-        if df is None or df.empty:
-            continue
-
-        model, latest_row, ai_prob = train_ai(df)
-
-        if model is None:
-            continue
-
-        df = normalize_columns(df)
-
-        rsi = calc_rsi(df["Close"]).iloc[-1]
-        ma5 = df["Close"].rolling(5).mean().iloc[-1]
-        ma25 = df["Close"].rolling(25).mean().iloc[-1]
-
-        level = judge_level(rsi, ma5, ma25, ai_prob)
-
-        if level == "対象外":
-            continue
-
-        name = get_stock_name(code)
-
-        stock_text = (
-            f"■ {name} ({code})\n"
-            f"現在値: {df['Close'].iloc[-1]:.0f}円\n"
-            f"RSI: {rsi:.1f}\n"
-            f"AI上昇確率: {ai_prob:.2%}\n"
-            f"判定: {level}\n\n"
-        )
-
-        if "★" in level:
-            strong_list.append(stock_text)
-        elif "△" in level:
-            watch_list.append(stock_text)
-
-    # =============================
-    # メール作成
-    # =============================
-
-    today = datetime.now()
-    date_str = today.strftime("%Y年%m月%d日")
-
-    body = f"【{date_str} 銘柄レポート】\n\n"
-
-    if today.day == 15:
-        body += "【お知らせ】\n"
-        body += "月に一度はGitHub Actionsを手動実行してください。\n"
-        body += "（自動停止防止のため）\n\n"
-
-    if strong_list:
-        body += "■ 本日の注目銘柄\n\n"
-        body += "".join(strong_list)
-
-    if watch_list:
-        body += "■ 様子見候補（参考）\n\n"
-        body += "".join(watch_list)
-
-    if not strong_list and not watch_list:
-        body += "本日は該当なし\n"
-
-    msg = MIMEMultipart()
-    msg["From"] = MAIL_ADDRESS
-    msg["To"] = MAIL_TO
-    msg["Subject"] = f"{date_str} 株式スキャン結果"
-
-    msg.attach(MIMEText(body, "plain"))
-
-    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-        server.starttls()
-        server.login(MAIL_ADDRESS, MAIL_PASSWORD)
-        server.send_message(msg)
-
+    # 4. 送信
+    try:
+        msg = MIMEMultipart()
+        msg["From"], msg["To"], msg["Subject"] = MAIL_ADDRESS, MAIL_TO, f"【AI予測】{date_str} スキャン結果"
+        msg.attach(MIMEText(body, "plain"))
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(MAIL_ADDRESS, MAIL_PASSWORD)
+            server.send_message(msg)
+        print("メール送信完了！")
+    except Exception as e:
+        print(f"メール送信失敗: {e}")
 
 if __name__ == "__main__":
     main()
